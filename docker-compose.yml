@@ -1,0 +1,16 @@
+services:
+  remo-homelab:
+    build: .
+    container_name: remo-homelab
+    ports:
+      - "8000:8000"
+    environment:
+      # 管理者ログイン用トークン。必ず推測されにくい値に変更してください。
+      ADMIN_TOKEN: "change-me-to-a-long-random-string"
+      # オプション: 接続元をネットワーク単位で制限する場合(カンマ区切り)
+      # ALLOW_CIDRS: "192.168.1.0/24"
+      # リバースプロキシ経由の場合のみ有効化(X-Forwarded-For を信頼する)
+      # TRUST_PROXY: "true"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

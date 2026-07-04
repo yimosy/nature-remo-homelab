@@ -1,0 +1,17 @@
+# アプリデータ
+data/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# macOS
+.DS_Store
+.AppleDouble
+._*
+
+# Claude Code
+.claude/
+CLAUDE.local.md

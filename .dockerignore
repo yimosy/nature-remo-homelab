@@ -1,0 +1,4 @@
+data/
+*.md
+.git/
+__pycache__/

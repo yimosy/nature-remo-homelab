@@ -181,7 +181,7 @@ async function renderControl() {
       btn.classList.add("sending");
       btn.disabled = true;
       try {
-        await api(`/api/signals/${btn.dataset.sid}/send`);
+        await api(`/api/signals/${btn.dataset.sid}/send`, { method: "POST" });
         if (navigator.vibrate) navigator.vibrate(30);
         btn.classList.add("sent");
       } catch (e) {
@@ -327,7 +327,7 @@ function bindSettingsHandlers() {
   on("[data-test]", guard(async el => {
     el.disabled = true;
     try {
-      await api(`/api/remos/${el.dataset.test}/test`);
+      await api(`/api/remos/${el.dataset.test}/test`, { method: "POST" });
       toast("✅ 接続できました");
     } finally { el.disabled = false; }
   }));
@@ -358,27 +358,70 @@ function bindSettingsHandlers() {
     renderSettings();
   }));
 
-  on("[data-learn]", guard(async el => {
-    // 学習開始: 現在の最終受信信号をベースラインとして記録しておく
-    let baseline = null;
-    try {
-      baseline = (await api(`/api/remos/${el.dataset.learnRemo}/learn`)).payload;
-    } catch { /* 接続不可でもフローは続行し、受信時にエラーを出す */ }
-    learnState = { applianceId: el.dataset.learn, remoId: el.dataset.learnRemo, baseline };
-    renderLearnBox();
+  on("#admin-logout", guard(async () => {
+    await api("/api/admin/logout", { method: "POST" });
+    await boot();
+    toast("ログアウトしました");
   }));
+
+  on("[data-learn]", guard(el => startLearn(el.dataset.learn, el.dataset.learnRemo)));
+}
+
+async function startLearn(applianceId, remoId) {
+  // 学習開始: 現在の最終受信信号をベースラインとして記録し、変化を自動監視する
+  let baseline = null;
+  try {
+    baseline = (await api(`/api/remos/${remoId}/learn`, { method: "POST" })).payload;
+  } catch (e) { toast(e.message); return; }
+  learnState = { applianceId, remoId, baseline, polling: true, secondsLeft: 20 };
+  renderLearnBox();
+  pollLearn(learnState);
+}
+
+async function pollLearn(st) {
+  while (learnState === st && st.polling && st.secondsLeft > 0) {
+    await new Promise(r => setTimeout(r, 1000));
+    if (learnState !== st || !st.polling) return;
+    st.secondsLeft--;
+    try {
+      const { payload } = await api(`/api/remos/${st.remoId}/learn`, { method: "POST" });
+      if (payload && JSON.stringify(payload) !== JSON.stringify(st.baseline)) {
+        st.polling = false;
+        renderLearnBox(payload);
+        return;
+      }
+    } catch { /* 一時的な通信エラーは無視して監視を続ける */ }
+    const counter = document.getElementById("learn-count");
+    if (counter) counter.textContent = st.secondsLeft;
+  }
+  if (learnState === st && st.polling) {
+    st.polling = false;
+    st.timedOut = true;
+    renderLearnBox();
+  }
 }
 
 function renderLearnBox(captured) {
   const area = document.getElementById("learn-area");
   if (!learnState) { area.innerHTML = ""; return; }
 
-  if (!captured) {
+  if (!captured && learnState.timedOut) {
     area.innerHTML = `
       <div class="learn-box">
-        <p>📡 <b>学習モード</b></p>
-        <p class="muted">実際のリモコンを Nature Remo に向けて、<br>学習したいボタンを <b>1回だけ</b> 押してください。<br>押したら下のボタンをタップします。</p>
-        <button class="btn wide" id="learn-fetch">リモコンを押した → 受信する</button>
+        <p>⏱️ 信号を受信できませんでした</p>
+        <p class="muted">リモコンを Remo 本体の正面 <b>10〜30cm</b> に近づけて、<br>もう一度試してください。<br>何度やってもダメな場合、そのリモコンは<br>赤外線ではなく電波(RF)式かもしれません。</p>
+        <button class="btn wide" id="learn-retry2">もう一度試す</button>
+        <button class="btn wide secondary" id="learn-cancel">キャンセル</button>
+      </div>`;
+    document.getElementById("learn-retry2").onclick = () => {
+      const { applianceId, remoId } = learnState;
+      startLearn(applianceId, remoId);
+    };
+  } else if (!captured) {
+    area.innerHTML = `
+      <div class="learn-box">
+        <p>📡 <b>受信待機中… <span id="learn-count">${learnState.secondsLeft}</span> 秒</b></p>
+        <p class="muted">実際のリモコンを Remo 本体の正面 <b>10〜30cm</b> に向けて、<br>学習したいボタンを <b>1回だけ</b> 押してください。<br>受信すると自動で次に進みます。</p>
         <button class="btn wide secondary" id="learn-cancel">キャンセル</button>
       </div>`;
   } else {
@@ -401,28 +444,12 @@ function renderLearnBox(captured) {
       } catch (e) { toast(e.message); }
     };
     document.getElementById("learn-retry").onclick = () => {
-      learnState.baseline = captured;
-      renderLearnBox();
+      const { applianceId, remoId } = learnState;
+      startLearn(applianceId, remoId);
     };
   }
 
   area.querySelector("#learn-cancel").onclick = () => { learnState = null; renderLearnBox(); };
-  const fetchBtn = area.querySelector("#learn-fetch");
-  if (fetchBtn) fetchBtn.onclick = async () => {
-    fetchBtn.disabled = true;
-    try {
-      const { payload } = await api(`/api/remos/${learnState.remoId}/learn`);
-      if (!payload) {
-        toast("信号が受信されていません。もう一度リモコンを押してください");
-      } else if (learnState.baseline && JSON.stringify(payload) === JSON.stringify(learnState.baseline)) {
-        toast("新しい信号が届いていないようです。Remo に近づけてもう一度押してください");
-      } else {
-        renderLearnBox(payload);
-        return;
-      }
-    } catch (e) { toast(e.message); }
-    fetchBtn.disabled = false;
-  };
   area.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 

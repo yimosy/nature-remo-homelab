@@ -148,6 +148,9 @@ REMO_HEADERS = {"X-Requested-With": "nature-remo-homelab", "Accept": "applicatio
 async def remo_get_messages(ip: str) -> dict | None:
     async with httpx.AsyncClient(timeout=5) as client:
         res = await client.get(f"http://{ip}/messages", headers=REMO_HEADERS)
+        # 起動後に一度も赤外線を受信していない Remo は 404 を返す(正常)
+        if res.status_code == 404:
+            return None
         res.raise_for_status()
         if not res.text.strip():
             return None
@@ -300,6 +303,7 @@ def list_remos(request: Request):
 async def add_remo(body: RemoIn, request: Request):
     require_admin(request)
     name, ip = body.name.strip(), body.ip.strip()
+    ip = ip.removeprefix("http://").removeprefix("https://").rstrip("/")
     if not name or not ip:
         raise HTTPException(400, "名前と IP アドレスを入力してください")
     with closing(db()) as conn:

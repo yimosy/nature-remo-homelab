@@ -5,12 +5,12 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # 管理者ログイン用トークン。必ず推測されにくい値に変更してください。
-      ADMIN_TOKEN: "change-me-to-a-long-random-string"
+      # 管理者ログイン用トークン。同じフォルダの .env に実際の値を書く(git管理外)
+      ADMIN_TOKEN: "${ADMIN_TOKEN:?.env に ADMIN_TOKEN を設定してください}"
       # オプション: 接続元をネットワーク単位で制限する場合(カンマ区切り)
-      # ALLOW_CIDRS: "192.168.1.0/24"
+      ALLOW_CIDRS: "${ALLOW_CIDRS:-}"
       # リバースプロキシ経由の場合のみ有効化(X-Forwarded-For を信頼する)
-      # TRUST_PROXY: "true"
+      TRUST_PROXY: "${TRUST_PROXY:-}"
     volumes:
       - ./data:/data
     restart: unless-stopped

@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import secrets
 import sqlite3
+import time
 from contextlib import closing
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 import httpx
@@ -57,7 +60,7 @@ def init_db() -> None:
               token TEXT UNIQUE NOT NULL,
               name TEXT NOT NULL,
               status TEXT NOT NULL DEFAULT 'pending',
-              created_at TEXT DEFAULT (datetime('now', 'localtime')),
+              created_at TEXT DEFAULT (datetime('now')),
               last_seen TEXT
             );
             CREATE TABLE IF NOT EXISTS remos(
@@ -83,6 +86,31 @@ def init_db() -> None:
 
 
 init_db()
+
+
+# ---------------------------------------------------------------- 監査ログ
+# /data/logs/access.log に UTC のタブ区切りで出力し、日次でローテートする。
+# 形式: 時刻 <TAB> 接続元IP <TAB> 操作者 <TAB> 内容
+
+LOG_DIR = Path(os.environ.get("LOG_DIR", str(Path(DB_PATH).parent / "logs")))
+LOG_RETENTION_DAYS = int(os.environ.get("LOG_RETENTION_DAYS", "30"))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+audit = logging.getLogger("audit")
+audit.setLevel(logging.INFO)
+_handler = TimedRotatingFileHandler(
+    LOG_DIR / "access.log", when="midnight", backupCount=LOG_RETENTION_DAYS,
+    encoding="utf-8", utc=True,
+)
+_formatter = logging.Formatter("%(asctime)sZ\t%(message)s", datefmt="%Y-%m-%dT%H:%M:%S")
+_formatter.converter = time.gmtime
+_handler.setFormatter(_formatter)
+audit.addHandler(_handler)
+audit.propagate = False
+
+
+def log_event(request: Request, message: str) -> None:
+    audit.info(f"{client_ip(request)}\t{actor_label(request)}\t{message}")
 
 
 # ---------------------------------------------------------------- 認証
@@ -116,7 +144,7 @@ def get_device(request: Request):
     with closing(db()) as conn:
         row = conn.execute("SELECT * FROM devices WHERE token=?", (token,)).fetchone()
         if row:
-            conn.execute("UPDATE devices SET last_seen=datetime('now','localtime') WHERE id=?", (row["id"],))
+            conn.execute("UPDATE devices SET last_seen=datetime('now') WHERE id=?", (row["id"],))
             conn.commit()
         return row
 
@@ -124,6 +152,32 @@ def get_device(request: Request):
 def is_admin(request: Request) -> bool:
     token = request.cookies.get("admin_token") or request.headers.get("x-admin-token")
     return token is not None and secrets.compare_digest(token, ADMIN_TOKEN)
+
+
+def actor_label(request: Request) -> str:
+    """ログ用の操作者表記。last_seen は更新しない読み取り専用の参照。"""
+    parts = []
+    if is_admin(request):
+        parts.append("admin")
+    token = request.cookies.get("device_token")
+    if token:
+        with closing(db()) as conn:
+            row = conn.execute("SELECT name, status FROM devices WHERE token=?", (token,)).fetchone()
+        if row:
+            parts.append(f"{row['name']}({row['status']})")
+    return "+".join(parts) or "-"
+
+
+@app.middleware("http")
+async def access_log(request: Request, call_next):
+    """API へのアクセスをすべて記録する(後から登録 = ip_filter より外側で実行)。"""
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        audit.info(
+            f"{client_ip(request)}\t{actor_label(request)}\t"
+            f"{request.method} {request.url.path}\t{response.status_code}"
+        )
+    return response
 
 
 def require_control(request: Request) -> None:
@@ -245,13 +299,16 @@ def register(body: RegisterIn, request: Request, response: Response):
         "device_token", token,
         max_age=60 * 60 * 24 * 365 * 5, httponly=True, samesite="lax",
     )
+    log_event(request, f"端末登録: {name}")
     return {"status": "pending"}
 
 
 @app.post("/api/admin/login")
-def admin_login(body: AdminLoginIn, response: Response):
+def admin_login(body: AdminLoginIn, request: Request, response: Response):
     if not secrets.compare_digest(body.token, ADMIN_TOKEN):
+        log_event(request, "管理者ログイン失敗")
         raise HTTPException(403, "トークンが違います")
+    log_event(request, "管理者ログイン成功")
     response.set_cookie(
         "admin_token", ADMIN_TOKEN,
         max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax",
@@ -282,10 +339,12 @@ def set_device_status(device_id: int, body: dict, request: Request):
     if status not in ("approved", "blocked", "pending"):
         raise HTTPException(400, "status は approved / blocked / pending のいずれかです")
     with closing(db()) as conn:
-        cur = conn.execute("UPDATE devices SET status=? WHERE id=?", (status, device_id))
-        conn.commit()
-        if cur.rowcount == 0:
+        row = conn.execute("SELECT name FROM devices WHERE id=?", (device_id,)).fetchone()
+        if not row:
             raise HTTPException(404, "端末が見つかりません")
+        conn.execute("UPDATE devices SET status=? WHERE id=?", (status, device_id))
+        conn.commit()
+    log_event(request, f"端末ステータス変更: {row['name']} -> {status}")
     return {"ok": True}
 
 
@@ -295,6 +354,7 @@ def delete_device(device_id: int, request: Request):
     with closing(db()) as conn:
         conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
         conn.commit()
+    log_event(request, f"端末削除: id={device_id}")
     return {"ok": True}
 
 
@@ -319,6 +379,7 @@ async def add_remo(body: RemoIn, request: Request):
         cur = conn.execute("INSERT INTO remos(name, ip) VALUES(?, ?)", (name, ip))
         conn.commit()
         remo_id = cur.lastrowid
+    log_event(request, f"Remo追加: {name} ({ip})")
     return {"id": remo_id}
 
 
@@ -334,6 +395,7 @@ def update_remo(remo_id: int, body: RemoIn, request: Request):
         conn.commit()
         if cur.rowcount == 0:
             raise HTTPException(404, "Remo が見つかりません")
+    log_event(request, f"Remo編集: {name} ({ip})")
     return {"ok": True}
 
 
@@ -343,6 +405,7 @@ def delete_remo(remo_id: int, request: Request):
     with closing(db()) as conn:
         conn.execute("DELETE FROM remos WHERE id=?", (remo_id,))
         conn.commit()
+    log_event(request, f"Remo削除: id={remo_id}")
     return {"ok": True}
 
 
@@ -368,6 +431,7 @@ async def learn_signal(remo_id: int, request: Request):
         raise HTTPException(502, f"Remo({ip})から受信できません: {e}")
     if payload is None:
         return {"payload": None}
+    log_event(request, f"信号受信(学習): Remo {ip}")
     return {"payload": payload}
 
 
@@ -413,6 +477,7 @@ def add_appliance(body: ApplianceIn, request: Request):
             (body.remo_id, name, body.icon.strip() or "🔘"),
         )
         conn.commit()
+        log_event(request, f"家電追加: {name}")
         return {"id": cur.lastrowid}
 
 
@@ -457,6 +522,7 @@ def add_signal(appliance_id: int, body: SignalIn, request: Request):
             (appliance_id, name, json.dumps(payload)),
         )
         conn.commit()
+        log_event(request, f"信号保存: {name}")
         return {"id": cur.lastrowid}
 
 
@@ -489,7 +555,8 @@ async def send_signal(signal_id: int, request: Request):
     with closing(db()) as conn:
         row = conn.execute(
             """
-            SELECT s.payload, r.ip FROM signals s
+            SELECT s.payload, s.name AS signal_name, a.name AS appliance_name, r.ip
+            FROM signals s
             JOIN appliances a ON a.id = s.appliance_id
             JOIN remos r ON r.id = a.remo_id
             WHERE s.id = ?
@@ -498,10 +565,13 @@ async def send_signal(signal_id: int, request: Request):
         ).fetchone()
     if not row:
         raise HTTPException(404, "信号が見つかりません")
+    target = f"{row['appliance_name']}/{row['signal_name']} -> {row['ip']}"
     try:
         await remo_post_messages(row["ip"], json.loads(row["payload"]))
     except httpx.HTTPError as e:
+        log_event(request, f"信号送信失敗: {target} ({e})")
         raise HTTPException(502, f"送信に失敗しました: {e}")
+    log_event(request, f"信号送信: {target}")
     return {"ok": True}
 
 

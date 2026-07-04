@@ -11,6 +11,8 @@ services:
       ALLOW_CIDRS: "${ALLOW_CIDRS:-}"
       # リバースプロキシ経由の場合のみ有効化(X-Forwarded-For を信頼する)
       TRUST_PROXY: "${TRUST_PROXY:-}"
+      # アクセス・操作ログ(data/logs/access.log)の保持日数
+      LOG_RETENTION_DAYS: "${LOG_RETENTION_DAYS:-30}"
     volumes:
       - ./data:/data
     restart: unless-stopped

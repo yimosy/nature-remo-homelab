@@ -40,6 +40,13 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// サーバーは UTC("YYYY-MM-DD HH:MM:SS")で保存している。端末のロケール・TZで表示する。
+function fmtDate(s) {
+  if (!s) return "-";
+  const d = new Date(s.replace(" ", "T") + "Z");
+  return isNaN(d) ? s : d.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+}
+
 // ---------------------------------------------------------------- 起動・状態遷移
 
 async function boot() {
@@ -232,7 +239,7 @@ async function renderSettings() {
         <div class="list-item">
           <div class="info">
             <div class="name">${esc(d.name)}</div>
-            <div class="meta">登録: ${esc(d.created_at || "-")} / 最終: ${esc(d.last_seen || "-")}</div>
+            <div class="meta">登録: ${fmtDate(d.created_at)} / 最終: ${fmtDate(d.last_seen)}</div>
           </div>
           <span class="badge ${d.status}">${{ pending: "承認待ち", approved: "承認済み", blocked: "ブロック" }[d.status]}</span>
           ${d.status !== "approved" ? `<button class="btn small" data-dev="${d.id}" data-st="approved">承認</button>` : ""}

@@ -210,6 +210,15 @@ class SignalIn(BaseModel):
     payload: dict
 
 
+class NameIn(BaseModel):
+    name: str
+
+
+class NameIconIn(BaseModel):
+    name: str
+    icon: str = "🔘"
+
+
 # ---------------------------------------------------------------- 端末登録・認証 API
 
 @app.get("/api/me")
@@ -313,6 +322,21 @@ async def add_remo(body: RemoIn, request: Request):
     return {"id": remo_id}
 
 
+@app.patch("/api/remos/{remo_id}")
+def update_remo(remo_id: int, body: RemoIn, request: Request):
+    require_admin(request)
+    name, ip = body.name.strip(), body.ip.strip()
+    ip = ip.removeprefix("http://").removeprefix("https://").rstrip("/")
+    if not name or not ip:
+        raise HTTPException(400, "名前と IP アドレスを入力してください")
+    with closing(db()) as conn:
+        cur = conn.execute("UPDATE remos SET name=?, ip=? WHERE id=?", (name, ip, remo_id))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Remo が見つかりません")
+    return {"ok": True}
+
+
 @app.delete("/api/remos/{remo_id}")
 def delete_remo(remo_id: int, request: Request):
     require_admin(request)
@@ -392,6 +416,23 @@ def add_appliance(body: ApplianceIn, request: Request):
         return {"id": cur.lastrowid}
 
 
+@app.patch("/api/appliances/{appliance_id}")
+def update_appliance(appliance_id: int, body: NameIconIn, request: Request):
+    require_admin(request)
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "家電名を入力してください")
+    with closing(db()) as conn:
+        cur = conn.execute(
+            "UPDATE appliances SET name=?, icon=? WHERE id=?",
+            (name, body.icon.strip() or "🔘", appliance_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(404, "家電が見つかりません")
+    return {"ok": True}
+
+
 @app.delete("/api/appliances/{appliance_id}")
 def delete_appliance(appliance_id: int, request: Request):
     require_admin(request)
@@ -417,6 +458,20 @@ def add_signal(appliance_id: int, body: SignalIn, request: Request):
         )
         conn.commit()
         return {"id": cur.lastrowid}
+
+
+@app.patch("/api/signals/{signal_id}")
+def update_signal(signal_id: int, body: NameIn, request: Request):
+    require_admin(request)
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "信号名を入力してください")
+    with closing(db()) as conn:
+        cur = conn.execute("UPDATE signals SET name=? WHERE id=?", (name, signal_id))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(404, "信号が見つかりません")
+    return {"ok": True}
 
 
 @app.delete("/api/signals/{signal_id}")

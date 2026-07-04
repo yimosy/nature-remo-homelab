@@ -249,6 +249,7 @@ async function renderSettings() {
             <div class="name">${esc(r.name)}</div>
             <div class="meta">${esc(r.ip)}</div>
           </div>
+          <button class="btn small secondary" data-remo-edit="${r.id}" data-name="${esc(r.name)}" data-ip="${esc(r.ip)}">✏️</button>
           <button class="btn small secondary" data-test="${r.id}">接続確認</button>
           <button class="btn small danger" data-remo-del="${r.id}">削除</button>
         </div>`).join("")}
@@ -267,10 +268,12 @@ async function renderSettings() {
             <div class="name">${esc(a.icon)} ${esc(a.name)}</div>
             <div class="meta">${esc(a.remo_name)} / 信号 ${a.signals.length} 件</div>
           </div>
+          <button class="btn small secondary" data-app-edit="${a.id}" data-name="${esc(a.name)}" data-icon="${esc(a.icon)}">✏️</button>
           <button class="btn small" data-learn="${a.id}" data-learn-remo="${a.remo_id}">信号を学習</button>
           <button class="btn small danger" data-app-del="${a.id}">削除</button>
           ${a.signals.length ? `<div style="width:100%">${a.signals.map(s =>
             `<div class="list-item"><div class="info"><div class="name" style="font-weight:normal">・${esc(s.name)}</div></div>
+             <button class="btn small secondary" data-sig-edit="${s.id}" data-name="${esc(s.name)}">✏️</button>
              <button class="btn small danger" data-sig-del="${s.id}">削除</button></div>`).join("")}</div>` : ""}
         </div>`).join("")}
       ${remos.length ? `
@@ -301,6 +304,40 @@ function deviceInfoCard() {
     </div>`;
 }
 
+// prompt/confirm はスタンドアロンモード等でブロックされるため使わない。
+// 編集はインラインフォーム、削除は2度押し確認で行う。
+function inlineEdit(row, fields, onSave) {
+  view.querySelectorAll(".inline-edit").forEach(e => e.remove());
+  const box = document.createElement("div");
+  box.className = "inline-edit";
+  box.innerHTML =
+    fields.map(f => `<input data-f="${f.key}" placeholder="${esc(f.label)}">`).join("") +
+    `<div class="row">
+       <button class="btn grow">保存</button>
+       <button class="btn secondary grow">キャンセル</button>
+     </div>`;
+  fields.forEach(f => { box.querySelector(`[data-f="${f.key}"]`).value = f.value; });
+  row.after(box);
+  const [saveBtn, cancelBtn] = box.querySelectorAll(".row .btn");
+  cancelBtn.onclick = () => box.remove();
+  saveBtn.onclick = async () => {
+    const values = {};
+    fields.forEach(f => { values[f.key] = box.querySelector(`[data-f="${f.key}"]`).value; });
+    saveBtn.disabled = true;
+    try { await onSave(values); } catch (e) { toast(e.message); saveBtn.disabled = false; }
+  };
+  box.querySelector("input").focus();
+}
+
+function confirmTap(btn) {
+  if (btn.dataset.armed) return true;
+  btn.dataset.armed = "1";
+  const original = btn.textContent;
+  btn.textContent = "本当に削除?";
+  setTimeout(() => { delete btn.dataset.armed; btn.textContent = original; }, 2500);
+  return false;
+}
+
 function bindSettingsHandlers() {
   const on = (sel, fn) => view.querySelectorAll(sel).forEach(el => { el.onclick = () => fn(el); });
   const guard = fn => async el => {
@@ -312,7 +349,7 @@ function bindSettingsHandlers() {
     renderSettings();
   }));
   on("[data-dev-del]", guard(async el => {
-    if (!confirm("この端末を削除しますか?")) return;
+    if (!confirmTap(el)) return;
     await api(`/api/admin/devices/${el.dataset.devDel}`, { method: "DELETE" });
     renderSettings();
   }));
@@ -331,8 +368,15 @@ function bindSettingsHandlers() {
       toast("✅ 接続できました");
     } finally { el.disabled = false; }
   }));
+  on("[data-remo-edit]", el => inlineEdit(el.closest(".list-item"), [
+    { key: "name", label: "名前", value: el.dataset.name },
+    { key: "ip", label: "IPアドレス", value: el.dataset.ip },
+  ], async v => {
+    await api(`/api/remos/${el.dataset.remoEdit}`, { method: "PATCH", body: v });
+    renderSettings();
+  }));
   on("[data-remo-del]", guard(async el => {
-    if (!confirm("この Remo を削除しますか?(紐づく家電・信号も消えます)")) return;
+    if (!confirmTap(el)) return;
     await api(`/api/remos/${el.dataset.remoDel}`, { method: "DELETE" });
     renderSettings();
   }));
@@ -347,13 +391,26 @@ function bindSettingsHandlers() {
     }});
     renderSettings();
   }));
+  on("[data-app-edit]", el => inlineEdit(el.closest(".list-item"), [
+    { key: "name", label: "家電名", value: el.dataset.name },
+    { key: "icon", label: "絵文字", value: el.dataset.icon },
+  ], async v => {
+    await api(`/api/appliances/${el.dataset.appEdit}`, { method: "PATCH", body: v });
+    renderSettings();
+  }));
   on("[data-app-del]", guard(async el => {
-    if (!confirm("この家電を削除しますか?(信号も消えます)")) return;
+    if (!confirmTap(el)) return;
     await api(`/api/appliances/${el.dataset.appDel}`, { method: "DELETE" });
     renderSettings();
   }));
+  on("[data-sig-edit]", el => inlineEdit(el.closest(".list-item"), [
+    { key: "name", label: "信号名", value: el.dataset.name },
+  ], async v => {
+    await api(`/api/signals/${el.dataset.sigEdit}`, { method: "PATCH", body: v });
+    renderSettings();
+  }));
   on("[data-sig-del]", guard(async el => {
-    if (!confirm("この信号を削除しますか?")) return;
+    if (!confirmTap(el)) return;
     await api(`/api/signals/${el.dataset.sigDel}`, { method: "DELETE" });
     renderSettings();
   }));

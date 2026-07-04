@@ -197,6 +197,14 @@ input, select {
   text-align: center;
 }
 
+.inline-edit {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  margin: 8px 0;
+}
+
 #toast {
   position: fixed;
   bottom: calc(env(safe-area-inset-bottom) + 76px);

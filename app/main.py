@@ -231,8 +231,11 @@ def validate_payload(payload) -> dict:
         not isinstance(data, list)
         or not data
         or not all(isinstance(x, int) and x >= 0 for x in data)
-        or not isinstance(freq, (int, float))
         or not isinstance(fmt, str)
+        # 公式仕様(swagger.yml)で freq は 30〜80 の整数(サブキャリア周波数 kHz)
+        or isinstance(freq, bool)
+        or not isinstance(freq, int)
+        or not 30 <= freq <= 80
     ):
         raise HTTPException(400, "信号データが不正です")
     return {"format": fmt, "freq": freq, "data": data}
